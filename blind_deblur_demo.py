@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
+from PIL import Image
 
 from guided_diffusion.blind_condition_methods import get_conditioning_method
 from guided_diffusion.measurements import get_operator, get_noise
@@ -37,17 +38,17 @@ def main():
     # Regularization
     parser.add_argument('--reg_scale', type=float, default=0.1)
     parser.add_argument('--reg_ord', type=int, default=0, choices=[0, 1])
-    
+
     args = parser.parse_args()
-   
+
     # logger
     logger = get_logger()
-    
+
     # Device setting
     device_str = f"cuda:{args.gpu}" if torch.cuda.is_available() else 'cpu'
     logger.info(f"Device set to {device_str}.")
-    device = torch.device(device_str)  
-    
+    device = torch.device(device_str)
+
     # Load configurations
     img_model_config = load_yaml(args.img_model_config)
     kernel_model_config = load_yaml(args.kernel_model_config)
@@ -58,7 +59,7 @@ def main():
     args.kernel = task_config["kernel"]
     args.kernel_size = task_config["kernel_size"]
     args.intensity = task_config["intensity"]
-   
+
     # Load model
     img_model = create_model(**img_model_config)
     img_model = img_model.to(device)
@@ -90,9 +91,9 @@ def main():
         logger.info(f"Kernel regularization : L{args.reg_ord}")
 
     # Load diffusion sampler
-    sampler = create_sampler(**diffusion_config) 
+    sampler = create_sampler(**diffusion_config)
     sample_fn = partial(sampler.p_sample_loop, model=model, measurement_cond_fn=measurement_cond_fn)
-   
+
     # Working directory
     out_path = os.path.join(args.save_dir, measure_config['operator']['name'])
     logger.info(f"work directory is created as {out_path}")
@@ -109,7 +110,7 @@ def main():
 
     # set seed for reproduce
     np.random.seed(123)
-    
+
     # Do Inference
     for i, ref_img in enumerate(loader):
         logger.info(f"Inference for image {i}")
@@ -117,38 +118,46 @@ def main():
         ref_img = ref_img.to(device)
 
         if args.kernel == 'motion':
-            kernel = Kernel(size=(args.kernel_size, args.kernel_size), intensity=args.intensity).kernelMatrix
-            kernel = torch.from_numpy(kernel).type(torch.float32)
-            kernel = kernel.to(device).view(1, 1, args.kernel_size, args.kernel_size)
+            # kernel = Kernel(size=(args.kernel_size, args.kernel_size), intensity=args.intensity).kernelMatrix
+            # 新加的
+            kernel = np.load(r"D:\Workspace\CV\low-level\deblur\diffusion-deconv\datasets\afhq\kernel_31\18.npy")
+            kernel = torch.from_numpy(kernel).type(torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+            # kernel = kernel.to(device).view(1, 1, args.kernel_size, args.kernel_size)
         elif args.kernel == 'gaussian':
             conv = Blurkernel('gaussian', kernel_size=args.kernel_size, device=device)
             kernel = conv.get_kernel().type(torch.float32)
             kernel = kernel.to(device).view(1, 1, args.kernel_size, args.kernel_size)
-        
+
         # Forward measurement model (Ax + n)
         y = operator.forward(ref_img, kernel)
         y_n = noiser(y)
-        
+        # 新加的
+        # blurry = Image.open(r'./data/blurry/60015.png')
+        # blurry = np.array(blurry).astype(np.float32) / 255.0
+        # blurry = torch.from_numpy(blurry).type(torch.float32)
+        # y_n = blurry.to(device).permute(2, 0, 1).unsqueeze(0)
+
         # Set initial sample 
         # !All values will be given to operator.forward(). Please be aware it.
         x_start = {'img': torch.randn(ref_img.shape, device=device).requires_grad_(),
-                   'kernel': torch.randn(kernel.shape, device=device).requires_grad_()}
-        
+                   'kernel': torch.randn((1, 1, args.kernel_size, args.kernel_size), device=device).requires_grad_()}
+
         # !prior check: keys of model (line 74) must be the same as those of x_start to use diffusion prior.
         for k in x_start:
             if k in model.keys():
                 logger.info(f"{k} will use diffusion prior")
             else:
                 logger.info(f"{k} will use uniform prior.")
-       
+
         # sample 
         sample = sample_fn(x_start=x_start, measurement=y_n, record=False, save_root=out_path)
 
         plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-        plt.imsave(os.path.join(out_path, 'label', 'ker_'+fname), clear_color(kernel))
-        plt.imsave(os.path.join(out_path, 'label', 'img_'+fname), clear_color(ref_img))
-        plt.imsave(os.path.join(out_path, 'recon', 'img_'+fname), clear_color(sample['img']))
-        plt.imsave(os.path.join(out_path, 'recon', 'ker_'+fname), clear_color(sample['kernel']))
+        plt.imsave(os.path.join(out_path, 'label', 'ker_' + fname), clear_color(kernel), cmap='gray')
+        plt.imsave(os.path.join(out_path, 'label', 'img_' + fname), clear_color(ref_img))
+        plt.imsave(os.path.join(out_path, 'recon', 'img_' + fname), clear_color(sample['img']))
+        plt.imsave(os.path.join(out_path, 'recon', 'ker_' + fname), clear_color(sample['kernel']), cmap='gray')
+
 
 if __name__ == '__main__':
     main()
